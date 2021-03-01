@@ -1,0 +1,710 @@
+// N is the number of prisoners, usually 100.
+int const N = 100;
+
+// This is the only globally changeable variable -- the state of the light switch.
+bool light = false;
+
+// General prisoner interface:
+// - init() represents the initial meeting.  Each prisoner can be given a number if necessary.
+// - visit() represents a visit to the room.  Prisoners can keep track of what day it is if necessary.
+class IPrisoner
+{
+public:
+	virtual void init(int prisoner) = 0;
+	virtual bool visit(int day) = 0;
+};
+
+// "Pass The Torch":
+// Prisoners are numbered, and information travels one prisoner at a time from 0 to 99, and when prisoner
+// 99 receives the signal, they tell the warden.
+// You can only pass information on your day, and you can only receive information on your day.
+class PassTheTorchStrategy : public IPrisoner
+{
+public:
+	void init(int prisoner)
+	{
+		me = prisoner;					// My prisoner number is the day I'm associated with.
+		torch = (me == 0);				// Prisoner 0 starts with the torch.
+	}
+	bool visit(int day)
+	{
+		if (me != day % N) {			// If it is not my day, there is nothing I can do.
+			light = false;				// Except I must turn off the light.
+			return false;
+		}
+		if (light) {					// If the light is on, pick up the torch.
+			torch = true;
+			light = false;
+		}
+		if (torch) {					// If we have the torch, try to pass it on!
+			light = true;
+			if (me == N - 1) {			// If we are prisoner 99, return true!		
+				return true;
+			}
+		}
+		return false;
+	}
+private:
+	int me;								// My prisoner number / associated day.
+	bool torch;							// Whether I have the torch or not.
+};
+
+// "Windowed Pass The Torch":
+// Prisoners are numbered, and information travels one prisoner at a time from 0 to 99, and when prisoner
+// 99 receives the signal, they tell the warden.
+// You can only pass information in your window, and you can only receive information in the window before your window.
+class WindowedPassTheTorchStrategy : public IPrisoner
+{
+public:
+	void init(int prisoner)
+	{
+		me = prisoner;					// My prisoner number is the window I'm associated with.
+		torch = (me == 0);				// Prisoner 0 starts with the torch.
+	}
+	bool visit(int day)
+	{
+		// Determine which window it is, and which window it was yesterday.
+		int window = (day / windowlength) % N;
+		int yesterdayswindow = ((day - 1) / windowlength) % N;
+		// If the light is on, and I'm the receiver, pick up the torch.
+		if (light && yesterdayswindow == me - 1) {
+			torch = true;
+			light = false;
+			if (me == N - 1) {			// If we are prisoner 99, return true!		
+				return true;
+			}
+		}
+		// If the window has changed, clear the light.
+		if (window != yesterdayswindow) {
+			light = false;
+		}
+		// If I have the torch and I'm supposed to drop it off, then do so.
+		if (torch && window == me) {
+			light = true;
+		}
+		return false;
+	}
+private:
+	static int const windowlength = 900;// Roughly optimal window length for 100 prisoners.  More testing is required.
+	int me;								// My prisoner number / associated window.
+	bool torch;							// Whether I have the torch or not.
+};
+
+// "Windowed Pass The Torch With Snowball":
+// Essentially, if the light is on in window "x", it means that everyone from [0..x] has been in the room.
+// Anyone can observe the light and record this information for future use, i.e. if they know everyone from [0..x] has been in the room, they can turn on the light in window x.
+// If anyone notices that everyone has been in the room, they tell the warden.  Note that this doesn't have to be prisoner 99.
+class WindowedPassTheTorchWithSnowball : public IPrisoner
+{
+public:
+	void init(int prisoner)
+	{
+		me = prisoner;					// My prisoner number is the window I'm associated with.
+		{for (int i = 0; i < N; i++) {
+			visited[i] = false;			// Initially assume nobody has visited.
+		}}
+	}
+	bool visit(int day)
+	{
+		visited[me] = true;				// I have visited now!
+		// Determine which window it is, and which window it was yesterday.
+		int window = (day / windowlength) % N;
+		int yesterdayswindow = ((day - 1) / windowlength) % N;
+		// Anyone can passively pick up the torch.
+		if (light) {					// If the light is on, it means that everyone from [0..yesterdayswindow] has been in the room.
+			{for (int i = 0; i <= yesterdayswindow; i++) {
+				visited[i] = true;
+			}}
+		}
+		// If the window has changed, clear the light.
+		if (window != yesterdayswindow) {
+			light = false;
+		}
+		// If I know that everyone from [0..window] has been in, then I can turn on the light in this window.
+		if (!light) {
+			bool everyonevisited = true;
+			{for (int i = 0; i <= window; i++) {
+				if (!visited[i]) {
+					everyonevisited = false;
+					break;
+				}
+			}}
+			if (everyonevisited) {
+				light = true;
+			}
+		}
+		{for (int i = 0; i < N; i++) {	// If I know everyone has visited, return true.
+			if (!visited[i]) {
+				return false;			// If I'm not sure about someone, return false.
+			}
+		}}
+		return true;
+	}
+private:
+	static int const windowlength = 900;// Roughly optimal window length for 100 prisoners.  More testing is required.
+	int me;								// My prisoner number / associated window.
+	int visited[N];						// My knowledge about every prisoner, including me.
+};
+
+// The "Information Snowball":
+// Prisoners are numbered and only turn on the light on day x if they know person x has been in the room.
+// It's a neat way to transfer information about exactly who has been in the room, but it takes too long.
+class InformationSnowballStrategy : public IPrisoner
+{
+public:
+	void init(int prisoner)
+	{
+		me = prisoner;					// My prisoner number is the day I'm associated with.
+		{for (int i = 0; i < N; i++) {
+			visited[i] = false;			// Initially assume nobody has visited.
+		}}
+	}
+	bool visit(int day)
+	{
+		visited[me] = true;				// I have visited now!
+		if (light) {					// If the light is on, the person associated with yesterday has visited.
+			visited[(day-1) % N] = true;
+		}
+		if (visited[day % N]) {			// If today is my day, turn the light on.
+			light = true;
+		} else {						// Otherwise turn it off.
+			light = false;
+		}
+		{for (int i = 0; i < N; i++) {	// If I know everyone has visited, return true.
+			if (!visited[i]) {
+				return false;			// If I'm not sure about someone, return false.
+			}
+		}}
+		return true;
+	}
+private:
+	int me;								// My prisoner number / associated day.
+	int visited[N];						// My knowledge about every prisoner, including me.
+};
+
+// The "Lamplighter", courtesy of Ian Vollick:
+// Prisoner 0 is selected as the collector.  The collector must always change the state of the bulb when in the room.
+// Everyone else observes the bulb, and after they observe it in both states, they turn it on the first time they
+// find themselves in the room with the light off.  
+// The collector is the only one allowed to turn off the light, and he tells the warden when he has turned off the light 99 times (in cases where he wasn't the one who turned it off).
+// This solves a more general prisoner problem where they initial state of the light is unknown, and prisoners are called into the room at random time intervals.
+class Lamplighter : public IPrisoner
+{
+public:
+	void init(int prisoner)
+	{
+		count = 1;						// Start off our count at one (me!)
+		collector = (prisoner == 0);	// I am the collector if I am prisoner #0.
+		started = false;				// Nobody (including the collector) has started yet.
+		previousstate = false;			// We don't know the previous state now... we will find out later.
+		twostatesobserved = false;		// We have not observed two states yet.
+	}
+	bool visit(int day)
+	{
+		if (!started) {
+			previousstate = light;		// If it is our first time in, we now know the previous state.
+			started = true;
+		}
+		if (collector) {
+			if (light) {				// If I am the collector and the light is on, turn it off.
+				if (light != previousstate) {
+					count++;
+				}
+				light = false;
+			} else {
+				light = true;
+			}
+			previousstate = light;
+			return count == N;			// Tell the warden if our count reaches 100.
+		}
+		if (light != previousstate) {
+			twostatesobserved = true;
+		}
+		if (count && !light && twostatesobserved) {	// If I am a normal person and it is my first time in with the light off and I have observed two states before,
+			light = true;				// then turn it on.
+			count--;
+		}
+		return false;
+	}
+private:
+	int count;							// My count.
+	bool collector;						// Whether I am the collector or not.
+	bool started;						// We need to know whether we have started the algorithm yet.
+	bool previousstate;					// We need to remember what the previous state of the light was.
+	bool twostatesobserved;				// The regular prisoners need to know whether they have observed the light in two states yet.
+};
+
+// The "Simple Count":
+// Prisoner 0 is selected as the collector.  Everyone else turns on the light the first time they
+// find themselves in the room with the light off.  The collector is the only one allowed to turn
+// off the light, and he tells the warden when he has turned off the light 99 times.
+// This is better, but still takes a while.
+class SimpleCountStrategy : public IPrisoner
+{
+public:
+	void init(int prisoner)
+	{
+		count = 1;						// Start off our count at one (me!)
+		collector = (prisoner == 0);	// I am the collector if I am prisoner #0.
+	}
+	bool visit(int day)
+	{
+		if (collector) {
+			if (light) {				// If I am the collector and the light is on, turn it off.
+				light = false;
+				count++;
+			}
+			return count == N;			// Tell the warden if our count reaches 100.
+		}
+		if (count && !light) {			// If I am a normal person and it is my first time in with the light off,
+			light = true;				// then turn it on.
+			count--;
+		}
+		return false;
+	}
+private:
+	int count;							// My count.
+	bool collector;						// Whether I am the collector or not.
+};
+
+// The "Simple Count", with a slight improvement:
+// The prisoner who gets called on the second day is the collector.  This gives a slightly better result 
+// because it means the first person in the room can turn on the light and get the count going right away,
+// and there is a good chance that it will be a different person in on the second day, which means we
+// effectively advance the process forward by a cycle (about 100 days improvement on average).
+class SimpleCountStrategyImprovement : public IPrisoner
+{
+public:
+	void init(int prisoner)
+	{
+		count = 1;						// Start off our count at one (me!) 
+		collector = false;				// Assume I am not the collector.
+	}
+	bool visit(int day)
+	{
+		if (day == 1) {					// If I am in on the second day, I am the collector!
+			collector = true;
+		}
+		if (collector) {
+			if (light) {				// If I am the collector and the light is on, turn it off.
+				light = false;
+				count++;
+			}
+			return count == N;			// Tell the warden if our count reaches 100.
+		}
+		if (count && !light) {			// If I am a normal person and it is my first time in with the light off,
+			light = true;				// then turn it on.
+			count--;
+		}
+		return false;
+	}
+private:
+	int count;							// My count.
+	bool collector;						// Whether I am the collector or not.
+};
+
+// The "Double or Nothing" Strategy:
+// Another counting strategy, but communicates bits in phases, where each phase means a different bit of the count.
+// We can transfer large numbers quickly this way.
+// Prisoner number 0 is the collector.
+// Note 1: Right now this is hard coded for 7 phases, which is good for 64 <= N < 127.
+// In general you require exactly ceil(log_2(N)) phases.
+// Note 2: The "Double or Nothing" strategy requires everyone to agree on a length for each phase.
+// I have implemented this by using a lookup table so that we can test different
+// phase lengths to see if we can improve things even further.  The table is local to each class to reinforce the
+// fact that the prisoners are "agreeing" on it ahead of time, and not using it to communicate with each other.
+// It is a waste of time and memory to do it this way, but I thought it was important to be clear.
+// If a trial run goes past the maximum number of days, the algorithm will revert back to a default
+// phase length of 460 days.
+class DoubleOrNothingStrategy : public IPrisoner
+{
+public:
+	DoubleOrNothingStrategy(bool usedifferentphaselengths)
+	{
+		int const standardphaselengths[14] = {460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460};
+		int const optimalphaselengths[14] = {750, 675, 675, 625, 575, 575, 400, 400, 500, 525, 525, 600, 600, 600};
+		int phase = 0;
+		int count = 0;
+		int const* phasetable = usedifferentphaselengths ? &optimalphaselengths[0] : &standardphaselengths[0];
+		{for (int day = 0; day < maxdays; day++) {
+			if (count >= phasetable[phase]) {
+				phase = (phase+1) % 7;
+				count = 0;
+			}
+			phases[day] = phase;
+			count++;
+		}}
+	}
+	void init(int prisoner)
+	{
+		count = 1;								// Start off our count at one (me!)
+		collector = (prisoner == 0);			// I am the collector if I am prisoner #0.
+	}
+	bool visit(int day)
+	{
+		int phase = whichphase(day);			// Figure out which phase we are in.
+		int tomorrowsphase = whichphase(day+1);	// Find out tomorrow's phase as well.
+		if (collector) {
+			if (light) {						// If I am the collector and the light is on, turn it off.
+				light = false;
+				count += (1 << phase);			// The light corresponds to the phase bit.
+			}
+			return count == N;					// Tell the warden if our count reaches 100.
+		}
+		if (phase != tomorrowsphase) {			// On the last day of each phase we must be careful.
+			if (light) {						// We must turn the light off if it is on.
+				light = false;
+				count += (1 << phase);			// The light corresponds to the phase bit.
+			}
+			phase = tomorrowsphase;				// We are effectively now playing in the next phase.
+		} 
+		if (count & (1 << phase)) {				// Normally we only do stuff if we have the correct phase bit.
+			if (light) {						// If the light is on, turn it off and collect the count.
+				light = false;
+				count += (1 << phase);			// The light corresponds to the phase bit.
+			} else {							// If the light is off, turn it on and decrease our count.
+				light = true;
+				count &= ~(1 << phase);			// Drop our phase bit.
+			}
+		}
+		return false;
+	}
+private:
+	// A short subroutine that figures out which phase we are in based on the day.
+	int whichphase(int day)
+	{
+		if (day < maxdays) {					// If it is in the lookup table, just look it up!
+			return phases[day];
+		} else {								// Otherwise use a 460 day cycle pattern.
+			return ((day-maxdays) / 460) % 7;
+		}
+	}
+	int count;									// My count.
+	bool collector;								// Whether I am the collector or not.
+	static int const maxdays = 36500;			// Limit the size of our lookup table.  This should be enough.
+	int phases[maxdays];						// Phase lookup table.
+};
+
+class DoubleOrNothingStrategyWithBoost : public IPrisoner
+{
+public:
+	DoubleOrNothingStrategyWithBoost(bool usedifferentphaselengths)
+	{
+		int const standardphaselengths[14] = {460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460, 460};
+		int const optimalphaselengths[14] = {750, 675, 675, 625, 575, 575, 400, 400, 500, 525, 525, 600, 600, 600};
+		int phase = 0;
+		int count = 0;
+		int const* phasetable = usedifferentphaselengths ? &optimalphaselengths[0] : &standardphaselengths[0];
+		{for (int day = 0; day < maxdays; day++) {
+			if (count >= phasetable[phase]) {
+				phase = (phase+1) % 7;
+				count = 0;
+			}
+			phases[day] = phase;
+			count++;
+		}}
+	}
+	void init(int prisoner)
+	{
+		count = 1;								// Start off our count at one (me!)
+		collector = (prisoner == 0);			// I am the collector if I am prisoner #0.
+	}
+	bool visit(int day)
+	{
+		if (day <= 12) {						// The "boost" period is 12 days long.
+			if (light) {						// We still must turn the light off if it is on.
+				light = false;
+				count += day;					// During the boost phase, the day is the count.
+			}
+			if (day < 12) {						// If it is the last day of the boost, fall through.
+				if (count == day+1) {			// Otherwise, if our count equals tomorrow, turn on the light.
+					light = true;
+					count -= day+1;				// Drop our count.
+				}
+				return false;					// Do not fall through to the regular phases.
+			}
+		}
+		int phase = whichphase(day);			// Figure out which phase we are in.
+		int tomorrowsphase = whichphase(day+1);	// Find out tomorrow's phase as well.
+		if (collector) {
+			if (light) {						// If I am the collector and the light is on, turn it off.
+				light = false;
+				count += (1 << phase);			// The light corresponds to the phase bit.
+			}
+			return count == N;					// Tell the warden if our count reaches 100.
+		}
+		if (phase != tomorrowsphase) {			// On the last day of each phase we must be careful.
+			if (light) {						// We must turn the light off if it is on.
+				light = false;
+				count += (1 << phase);			// The light corresponds to the phase bit.
+			}
+			phase = tomorrowsphase;				// We are effectively now playing in the next phase.
+		} 
+		if (count & (1 << phase)) {				// Normally we only do stuff if we have the correct phase bit.
+			if (light) {						// If the light is on, turn it off and collect the count.
+				light = false;
+				count += (1 << phase);			// The light corresponds to the phase bit.
+			} else {							// If the light is off, turn it on and decrease our count.
+				light = true;
+				count &= ~(1 << phase);			// Drop our phase bit.
+			}
+		}
+		return false;
+	}
+private:
+	// A short subroutine that figures out which phase we are in based on the day.
+	int whichphase(int day)
+	{
+		if (day < maxdays) {					// If it is in the lookup table, just look it up!
+			return phases[day];
+		} else {								// Otherwise use a 460 day cycle pattern.
+			return ((day-maxdays) / 460) % 7;
+		}
+	}
+	int count;									// My count.
+	bool collector;								// Whether I am the collector or not.
+	static int const maxdays = 36500;			// Limit the size of our lookup table.  This should be enough.
+	int phases[maxdays];						// Phase lookup table.
+};
+
+// The "Two Stage Count" Strategy:
+// This strategy simplifies the phased approach by only using two phases and counting in groups during the second phase.
+// This is another way of transferring large numbers quickly, but we need three different types of prisoners.
+// Prisoner number 0 is the collector, there are a small number of assistant collectors, and the rest are normal prisoners (some people call them "drones").
+// Note 1:  This strategy has a number of possible parameters that can be configured for different results.  They are:
+// "a" = The number of assistant counters.  This must divide evenly into N, otherwise phase 2 won't work.
+// "q" = The quantity of counts to communicate during phase 2.  This must equal N / a.
+// "s1"= The length of phase 1 in days.
+// "s2"= The length of phase 2 in days.
+// So far my limited testing has shown that a = 10, q = 10, s1 = 2290, and s2 = 2340 are decent parameter values when N = 100.
+// Note 2:  The collector has to keep his master count separate from his normal count, otherwise it could theoretically become
+// difficult to tell whether he should drop a count or not during phase one.  He has to drop at least one count (himself) during
+// phase one because there is an assistant out there expecting to collect it.  This is necessary for a simple implementation to work well.
+// This can be worked around by initializing the master count to 1 and basically working it out so that a and q both divide into 99.
+// Note 3:  During the course of the simulation, the collector may get "promoted" to assistant.  If he does, he can instantly transfer a 
+// bundle of counts to the master count and demote himself again.
+class TwoStageCountStrategy : public IPrisoner
+{
+public:
+	TwoStageCountStrategy(int a_, int s1_, int s2_)
+	{
+		a = a_;
+		q = N / a;
+		s1 = s1_;
+		s2 = s2_;
+	}
+	void init(int prisoner)
+	{
+		count = 1;													// Start off our count at one (me!)
+		mastercount = 0;											// The collector's master count starts at zero.
+		collector = (prisoner == 0);								// I am the collector if I am prisoner #0.
+		assistant = (prisoner >= 1 && prisoner <= a) ? 1 : 0;		// I am an assistant collector if I am prisoner #1..a.
+	}
+	bool visit(int day)
+	{
+		int phase = whichphase(day);								// Figure out which phase we are in.
+		int tomorrowsphase = whichphase(day+1);						// Find out tomorrow's phase as well.
+		if (light && phase == 1 && count < q * assistant) {			// If we are in phase 1 and we are an assistant and we haven't reached our quota, pick up the light.
+			light = false;
+			count++;
+		}
+		if (light && phase == 2 && collector) {						// If we are in phase 2 and we are the collector, pick up the light.
+			light = false;
+			mastercount += q;
+			return mastercount == N;
+		}
+		if (phase != tomorrowsphase) {								// On the last day of each phase we must be careful.
+			if (light) {											// We must turn the light off if it is on.
+				light = false;
+				count += phase == 1 ? 1 : q;						// The light means different things depending on the phase.
+				if (phase == 2) {									// If this is the end of phase 2, we just got promoted.
+					assistant++;
+					if (collector) {								// If we are the collector, transfer the count we just picked up to the master count and demote ourselves.
+						mastercount += q;
+						count -= 1;
+						assistant--;
+					}
+				}
+			}
+			phase = tomorrowsphase;									// We are effectively now playing in the next phase.
+		} 
+		if (!light && phase == 1 && count > q * assistant) {		// If we are in phase 1 and we have a count that is beyond our quota, drop a count.
+			light = true;
+			count--;
+		} else if (!light && phase == 2 && assistant && count >= q) {	// If we are in phase 2 and we are an assistant and we've reached our quota, drop a bundle of counts.
+			light = true;
+			count -= q;
+			assistant--;											// We've done our job.
+		}
+		return false;
+	}
+private:
+	// A short subroutine that figures out which phase we are in based on the day.
+	int whichphase(int day)
+	{
+		return (day % (s1 + s2)) < s1 ? 1 : 2;	// We are in phase 1 if our day (modulo total length of phases 1 and 2) is less than phase 1 length.
+	}
+	int a;										// Parameter:  The number of assistant counters.
+	int q;										// Parameter:  The quantity of counts to communicate during phase 2.
+	int s1;										// Parameter:  The length of phase 1 in days.
+	int s2;										// Parameter:  The length of phase 2 in days.
+	int count;									// My count.
+	int mastercount;							// The collector's master count.
+	bool collector;								// Whether I am the collector or not.
+	int assistant;								// Whether I am an assistant collector or not.
+};
+
+// The "Two Stage Count" Strategy, but with the master counter starting at 1 and the other 99 counts divided up between the assistants.
+// That means that q and a both have to divide evenly into 99.
+class TwoStageCountStrategyImprovement : public IPrisoner
+{
+public:
+	TwoStageCountStrategyImprovement(int a_, int s1_, int s2_)
+	{
+		a = a_;
+		q = (N - 1) / a;
+		s1 = s1_;
+		s2 = s2_;
+	}
+	void init(int prisoner)
+	{
+		count = 1;													// Start off our count at one (me!)
+		mastercount = 0;											// The collector's master count starts at zero.
+		collector = (prisoner == 0);								// I am the collector if I am prisoner #0.
+		assistant = (prisoner >= 1 && prisoner <= a) ? 1 : 0;		// I am an assistant collector if I am prisoner #1..a.
+		if (collector) {											// If we are the collector, don't bother giving our count to an assistant.
+			count = 0;
+			mastercount = 1;
+		}
+	}
+	bool visit(int day)
+	{
+		int phase = whichphase(day);								// Figure out which phase we are in.
+		int tomorrowsphase = whichphase(day+1);						// Find out tomorrow's phase as well.
+		if (light && phase == 1 && count < q * assistant) {			// If we are in phase 1 and we are an assistant and we haven't reached our quota, pick up the light.
+			light = false;
+			count++;
+		}
+		if (light && phase == 2 && collector) {						// If we are in phase 2 and we are the collector, pick up the light.
+			light = false;
+			mastercount += q;
+			return mastercount == N;
+		}
+		if (phase != tomorrowsphase) {								// On the last day of each phase we must be careful.
+			if (light) {											// We must turn the light off if it is on.
+				light = false;
+				count += phase == 1 ? 1 : q;						// The light means different things depending on the phase.
+				if (phase == 2) {									// If this is the end of phase 2, we just got promoted.
+					assistant++;
+					if (collector) {								// If we are the collector, transfer the count we just picked up to the master count and demote ourselves.
+						mastercount += q;
+						count -= 1;
+						assistant--;
+					}
+				}
+			}
+			phase = tomorrowsphase;									// We are effectively now playing in the next phase.
+		} 
+		if (!light && phase == 1 && count > q * assistant) {		// If we are in phase 1 and we have a count that is beyond our quota, drop a count.
+			light = true;
+			count--;
+		} else if (!light && phase == 2 && assistant && count >= q) {	// If we are in phase 2 and we are an assistant and we've reached our quota, drop a bundle of counts.
+			light = true;
+			count -= q;
+			assistant--;											// We've done our job.
+		}
+		return false;
+	}
+private:
+	// A short subroutine that figures out which phase we are in based on the day.
+	int whichphase(int day)
+	{
+		return (day % (s1 + s2)) < s1 ? 1 : 2;	// We are in phase 1 if our day (modulo total length of phases 1 and 2) is less than phase 1 length.
+	}
+	int a;										// Parameter:  The number of assistant counters.
+	int q;										// Parameter:  The quantity of counts to communicate during phase 2.
+	int s1;										// Parameter:  The length of phase 1 in days.
+	int s2;										// Parameter:  The length of phase 2 in days.
+	int count;									// My count.
+	int mastercount;							// The collector's master count.
+	bool collector;								// Whether I am the collector or not.
+	int assistant;								// Whether I am an assistant collector or not.
+};
+
+int main()
+{
+	// Pick a seed and print it out in case we need to duplicate a run for debugging purposes.
+	unsigned seed = (unsigned)time(0);
+	printf("\nSeed = %d\n", seed);
+
+	const int solutions = 12;
+	IPrisoner* prisoners[solutions][N];
+	char* names[solutions] = {	"WindowedPassTheTorch",
+								"WindowedPassTheTorchWithSnowball",
+								"InformationSnowball", 
+								"Lamplighter",
+								"SimpleCount", 
+								"SimpleCountImproved", 
+								"DoubleOrNothing",
+								"DoubleOrNothingWithBoost",
+								"DoubleOrNothingDifferent",
+								"DoubleOrNothingDifferentWithBoost",
+								"TwoStageCount",
+								"TwoStageCountImproved"};
+	{for (int i = 0; i < N; i++) {
+		prisoners[0][i] = new WindowedPassTheTorchStrategy();
+		prisoners[1][i] = new WindowedPassTheTorchWithSnowball();
+		prisoners[2][i] = new InformationSnowballStrategy();
+		prisoners[3][i] = new Lamplighter();
+		prisoners[4][i] = new SimpleCountStrategy();
+		prisoners[5][i] = new SimpleCountStrategyImprovement();
+		prisoners[6][i] = new DoubleOrNothingStrategy(false);
+		prisoners[7][i] = new DoubleOrNothingStrategyWithBoost(false);
+		prisoners[8][i] = new DoubleOrNothingStrategy(true);
+		prisoners[9][i] = new DoubleOrNothingStrategyWithBoost(true);
+		prisoners[10][i]= new TwoStageCountStrategy(10, 2410, 2405);
+		prisoners[11][i]= new TwoStageCountStrategyImprovement(11, 2270, 2470);
+	}}
+	{for (int solution = 0; solution < solutions; solution++) {
+		srand(seed);
+		const int trials = 1000;
+		int sum = 0;
+		int min = 0x7FFFFFFF;
+		int max = 0;
+		{for (int trial = 0; trial < trials; trial++) {
+			printf("%d/%d\r", trial, trials);
+			light = false;
+			{for (int i = 0; i < N; i++) {
+				prisoners[solution][i]->init(i);
+			}}
+			bool visited[N] = {};
+			int day = 0;
+			while (true) {
+				int i = rand() % N;
+				visited[i] = true;
+				if (prisoners[solution][i]->visit(day++)) {
+					break;
+				}
+			}
+			{for (int i = 0; i < N; i++) {
+				if (!visited[i]) {
+					printf("Oh no, wrong answer!  Everyone is executed!\n");
+				}
+			}}
+			sum += day;
+			if (day > max) {
+				max = day;
+			}
+			if (day < min) {
+				min = day;
+			}
+		}}
+		printf("%-40s: %d trials: %d days min, %d days max, %.2f days average (%.2f years)\n", names[solution], trials, min, max, (double)sum / (double)trials, (double)sum / (double)trials / 365.0);
+	}}
+	{for (int i = 0; i < N; i++) {
+		{for (int j = 0; j < solutions; j++) {
+			delete prisoners[j][i];
+		}}
+	}}
+	return 0;
+}
